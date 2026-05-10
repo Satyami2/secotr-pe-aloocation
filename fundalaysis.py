@@ -1,15 +1,9 @@
 """
 Sector Mutual Fund Analysis Tool
 --------------------------------
-Reads NAV files, PE ratios, sector allocations, and stock allocations.
-Produces:
-  1. Rolling 1Y / 3Y / 5Y return medians per fund
-  2. Harmonic-mean PE per fund (HM is the right average for ratios like P/E)
-  3. Sector-wise fund grouping
-  4. Sector & stock allocation breakdowns
-  5. Combined analysis: pick a sector -> see funds, returns, PE, top holdings
 """
 
+import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy.stats import hmean
@@ -17,45 +11,36 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ---------- File paths ----------
-# UPDATED: Replaced underscores with spaces to match your GitHub repository exactly.
+# These exactly match the files with spaces in your GitHub repo
 NAV_FILES = ['sector funds 1.xlsx', 'secotr funds 2.xlsx',
              'secotr funds 3.xlsx', 'sector funds 4.xlsx']
 SECTOR_ALLOC_FILE = 'secotrs aloocations.xlsx'
 STOCK_ALLOC_FILE  = 'sectors stock alocation.xlsx'
 PE_FILE           = 'sector pe rstio.xlsx'
 
-
 # ============================================================
-# 1. LOAD NAV DATA
+# DATA LOADING FUNCTIONS (Cached for speed)
 # ============================================================
+@st.cache_data
 def load_nav_data():
-    """Read all 4 NAV files, return one wide dataframe: Date index, fund columns."""
     all_navs = []
     for f in NAV_FILES:
         raw = pd.read_excel(f, header=None)
-        fund_names = raw.iloc[2, 1:].tolist()            # row 2 -> fund names
-        data = raw.iloc[4:, :].copy()                      # row 4 onwards -> data
+        fund_names = raw.iloc[2, 1:].tolist()            
+        data = raw.iloc[4:, :].copy()                      
         data.columns = ['Date'] + fund_names
         data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
         data = data.dropna(subset=['Date']).set_index('Date')
-        # drop columns that are NaN-named (empty)
         data = data.loc[:, data.columns.notna()]
         data = data.apply(pd.to_numeric, errors='coerce')
         all_navs.append(data)
     nav = pd.concat(all_navs, axis=1, sort=True)
-    nav = nav.loc[:, ~nav.columns.duplicated()]          # drop duplicate cols if any
+    nav = nav.loc[:, ~nav.columns.duplicated()]          
     nav = nav.sort_index()
     return nav
 
-
-# ============================================================
-# 2. ROLLING RETURNS (1Y / 3Y / 5Y) - MEDIAN
-# ============================================================
+@st.cache_data
 def rolling_returns_summary(nav):
-    """
-    For every fund compute rolling annualised returns and report the MEDIAN.
-    1Y -> 252 trading days, 3Y -> 756, 5Y -> 1260.
-    """
     windows = {'1Y': 252, '3Y': 756, '5Y': 1260}
     out = {}
     for fund in nav.columns:
@@ -63,7 +48,6 @@ def rolling_returns_summary(nav):
         row = {'Fund': fund, 'Data Points': len(s)}
         for label, w in windows.items():
             if len(s) > w:
-                # rolling return = (end / start) ^ (1/years) - 1
                 roll = (s / s.shift(w)) ** (252.0 / w) - 1
                 roll = roll.dropna() * 100
                 row[f'{label} Median Return (%)'] = round(roll.median(), 2) if len(roll) else np.nan
@@ -72,12 +56,8 @@ def rolling_returns_summary(nav):
         out[fund] = row
     return pd.DataFrame(out).T.reset_index(drop=True)
 
-
-# ============================================================
-# 3. PE RATIOS - HARMONIC MEAN
-# ============================================================
+@st.cache_data
 def load_pe_data():
-    """Parse the PE ratio file. Returns dict { fund_name : DataFrame(date, pe, pbv, dy, mcap) }."""
     raw = pd.read_excel(PE_FILE, header=None)
     funds = {}
     current_fund = None
@@ -86,8 +66,7 @@ def load_pe_data():
         cell0 = str(r[0]) if pd.notna(r[0]) else ''
         if cell0.startswith('Scheme Name:'):
             if current_fund and rows:
-                funds[current_fund] = pd.DataFrame(
-                    rows, columns=['Date', 'PE', 'PBV', 'DY', 'MCAP'])
+                funds[current_fund] = pd.DataFrame(rows, columns=['Date', 'PE', 'PBV', 'DY', 'MCAP'])
             current_fund = cell0.replace('Scheme Name:', '').strip()
             rows = []
         else:
@@ -102,36 +81,28 @@ def load_pe_data():
             except Exception:
                 pass
     if current_fund and rows:
-        funds[current_fund] = pd.DataFrame(
-            rows, columns=['Date', 'PE', 'PBV', 'DY', 'MCAP'])
+        funds[current_fund] = pd.DataFrame(rows, columns=['Date', 'PE', 'PBV', 'DY', 'MCAP'])
     return funds
 
-
+@st.cache_data
 def pe_summary(pe_data):
-    """Harmonic-mean PE per fund (HM is the correct average for ratios).
-    Also include latest PE and arithmetic mean for reference."""
     rows = []
     for fund, df in pe_data.items():
         pe = df['PE'].dropna()
-        pe = pe[pe > 0]                                  # HM needs positives
-        if len(pe) == 0:
-            continue
+        pe = pe[pe > 0]                                  
+        if len(pe) == 0: continue
         rows.append({
             'Fund': fund,
             'Latest PE': round(df['PE'].dropna().iloc[0], 2) if df['PE'].dropna().size else np.nan,
             'PE (Harmonic Mean)': round(hmean(pe), 2),
             'PE (Arithmetic Mean)': round(pe.mean(), 2),
             'PE (Median)': round(pe.median(), 2),
-            'PBV (HM)': round(hmean(df['PBV'].dropna()[df['PBV'] > 0]), 2)
-                         if (df['PBV'].dropna() > 0).any() else np.nan,
+            'PBV (HM)': round(hmean(df['PBV'].dropna()[df['PBV'] > 0]), 2) if (df['PBV'].dropna() > 0).any() else np.nan,
             'Months of Data': len(pe),
         })
     return pd.DataFrame(rows)
 
-
-# ============================================================
-# 4. ALLOCATION TABLES
-# ============================================================
+@st.cache_data
 def load_sector_allocation():
     df = pd.read_excel(SECTOR_ALLOC_FILE, header=3)
     df.columns = ['Fund', 'Sector', 'No of Cos', 'Allocation (%)']
@@ -139,7 +110,7 @@ def load_sector_allocation():
     df['Allocation (%)'] = pd.to_numeric(df['Allocation (%)'], errors='coerce')
     return df
 
-
+@st.cache_data
 def load_stock_allocation():
     df = pd.read_excel(STOCK_ALLOC_FILE, header=3)
     df.columns = ['Fund', 'Company', 'Asset', 'Sector', 'Allocation (%)']
@@ -147,159 +118,97 @@ def load_stock_allocation():
     df['Allocation (%)'] = pd.to_numeric(df['Allocation (%)'], errors='coerce')
     return df
 
-
-# ============================================================
-# 5. SECTOR-LEVEL HELPERS
-# ============================================================
-def funds_by_sector(sector_df, sector_name, top_n=20):
-    """Funds with the highest allocation to a chosen sector."""
-    s = sector_df[sector_df['Sector'].str.lower() == sector_name.lower()]
-    return s.sort_values('Allocation (%)', ascending=False).head(top_n).reset_index(drop=True)
-
-
 def list_sectors(sector_df):
     return sorted(sector_df['Sector'].dropna().unique().tolist())
 
-
 # ============================================================
-# 6. ONE-FUND DEEP DIVE
-# ============================================================
-def fund_overview(fund_name, returns_df, pe_df, sector_df, stock_df):
-    print(f"\n{'='*70}\n  FUND: {fund_name}\n{'='*70}")
-
-    r = returns_df[returns_df['Fund'].str.strip() == fund_name.strip()]
-    if not r.empty:
-        print("\nROLLING RETURNS (median, annualised):")
-        for c in ['1Y Median Return (%)', '3Y Median Return (%)', '5Y Median Return (%)']:
-            v = r.iloc[0][c]
-            print(f"  {c:30s} : {v if pd.isna(v) else f'{v:.2f}%'}")
-    else:
-        print("  No NAV/return data found.")
-
-    p = pe_df[pe_df['Fund'].str.strip() == fund_name.strip()]
-    if not p.empty:
-        print("\nVALUATION:")
-        for c in ['Latest PE', 'PE (Harmonic Mean)', 'PE (Median)', 'PBV (HM)']:
-            print(f"  {c:25s} : {p.iloc[0][c]}")
-
-    sec = sector_df[sector_df['Fund'].str.strip() == fund_name.strip()]
-    if not sec.empty:
-        print("\nSECTOR ALLOCATION:")
-        for _, row in sec.sort_values('Allocation (%)', ascending=False).head(8).iterrows():
-            print(f"  {row['Sector']:25s} : {row['Allocation (%)']:6.2f}%")
-
-    stk = stock_df[stock_df['Fund'].str.strip() == fund_name.strip()]
-    if not stk.empty:
-        print("\nTOP STOCK HOLDINGS:")
-        for _, row in stk.sort_values('Allocation (%)', ascending=False).head(10).iterrows():
-            print(f"  {row['Company']:45s} {row['Sector']:20s} {row['Allocation (%)']:6.2f}%")
-
-
-# ============================================================
-# 7. SECTOR DEEP DIVE -> funds + their PE + their returns
-# ============================================================
-def sector_deep_dive(sector_name, sector_df, returns_df, pe_df, top_n=15):
-    print(f"\n{'='*70}\n  SECTOR ANALYSIS: {sector_name.upper()}\n{'='*70}")
-
-    sub = funds_by_sector(sector_df, sector_name, top_n=top_n)
-    if sub.empty:
-        print("No funds with allocation in this sector.")
-        return None
-
-    # Merge in returns + PE so we get a single comparison table
-    sub = sub.merge(returns_df, on='Fund', how='left')
-    sub = sub.merge(pe_df[['Fund', 'PE (Harmonic Mean)', 'Latest PE']],
-                    on='Fund', how='left')
-
-    cols = ['Fund', 'Allocation (%)',
-            '1Y Median Return (%)', '3Y Median Return (%)', '5Y Median Return (%)',
-            'Latest PE', 'PE (Harmonic Mean)']
-    cols = [c for c in cols if c in sub.columns]
-
-    print(f"\nTop {len(sub)} funds with highest exposure to {sector_name}:\n")
-    print(sub[cols].to_string(index=False))
-
-    avg_pe_hm = sub['PE (Harmonic Mean)'].dropna()
-    if len(avg_pe_hm):
-        print(f"\nAverage PE (HM) across these funds: {hmean(avg_pe_hm[avg_pe_hm > 0]):.2f}")
-
-    return sub
-
-
-# ============================================================
-# MAIN
+# MAIN STREAMLIT APP
 # ============================================================
 def main():
-    print("Loading NAV data ...")
-    nav = load_nav_data()
-    print(f"  -> {nav.shape[1]} funds, {nav.shape[0]} dates "
-          f"({nav.index.min().date()} to {nav.index.max().date()})")
+    st.set_page_config(page_title="Sector Fund Analysis", layout="wide")
+    st.title("📈 Sector Mutual Fund Analysis Tool")
 
-    print("\nComputing rolling returns ...")
-    returns = rolling_returns_summary(nav)
+    # This loading spinner will show while the Excel files are being read
+    with st.spinner("Loading and processing data..."):
+        nav = load_nav_data()
+        returns = rolling_returns_summary(nav)
+        pe_raw = load_pe_data()
+        pe_summary_df = pe_summary(pe_raw)
+        sector_df = load_sector_allocation()
+        stock_df  = load_stock_allocation()
 
-    print("Loading PE data ...")
-    pe_raw = load_pe_data()
-    pe_summary_df = pe_summary(pe_raw)
-    print(f"  -> PE data for {len(pe_summary_df)} funds")
+        # Clean fund names so merges work perfectly
+        for d in (returns, pe_summary_df, sector_df, stock_df):
+            d['Fund'] = d['Fund'].astype(str).str.strip()
 
-    print("Loading sector & stock allocations ...")
-    sector_df = load_sector_allocation()
-    stock_df  = load_stock_allocation()
+    st.success("Data loaded successfully!")
 
-    # Clean fund names (trim trailing spaces) so merges work
-    for d in (returns, pe_summary_df, sector_df, stock_df):
-        d['Fund'] = d['Fund'].astype(str).str.strip()
+    # ---------- UI Tabs ----------
+    tab1, tab2, tab3 = st.tabs(["🏆 Top Funds", "📊 Sector Deep Dive", "🔍 Single Fund Overview"])
 
-    # ---------- Save consolidated outputs to Excel ----------
-    # IMPORTANT: Ensure this path exists or Streamlit might throw another error when saving.
-    # We'll use a local output path for the cloud environment.
-    out_path = 'fund_analysis_output.xlsx' 
-    with pd.ExcelWriter(out_path, engine='openpyxl') as w:
-        returns.to_excel(w, sheet_name='Rolling Returns', index=False)
-        pe_summary_df.to_excel(w, sheet_name='PE Summary',     index=False)
-        sector_df.to_excel(w, sheet_name='Sector Allocation',  index=False)
-        stock_df.to_excel(w, sheet_name='Stock Allocation',    index=False)
+    with tab1:
+        st.subheader("Top 10 Funds by 5Y Median Rolling Return")
+        top5y = (returns.dropna(subset=['5Y Median Return (%)'])
+                        .sort_values('5Y Median Return (%)', ascending=False)
+                        .head(10))
+        st.dataframe(top5y[['Fund', '1Y Median Return (%)', '3Y Median Return (%)', '5Y Median Return (%)']], use_container_width=True)
 
-        # one combined master sheet
-        master = (returns
-                  .merge(pe_summary_df[['Fund', 'Latest PE',
-                                        'PE (Harmonic Mean)', 'PE (Median)']],
-                         on='Fund', how='left'))
-        master.to_excel(w, sheet_name='Master Summary', index=False)
-    print(f"\nSaved consolidated workbook -> {out_path}")
+        st.subheader("All PE Summaries")
+        st.dataframe(pe_summary_df, use_container_width=True)
 
-    # ---------- Demo: list sectors ----------
-    print("\nAvailable sectors:")
-    sectors = list_sectors(sector_df)
-    for i, s in enumerate(sectors, 1):
-        print(f"  {i:2d}. {s}")
+    with tab2:
+        sectors = list_sectors(sector_df)
+        selected_sector = st.selectbox("Choose a Sector to Analyze", sectors)
+        
+        if selected_sector:
+            st.subheader(f"Analysis for: {selected_sector}")
+            sub = sector_df[sector_df['Sector'].str.lower() == selected_sector.lower()]
+            sub = sub.sort_values('Allocation (%)', ascending=False).head(15).reset_index(drop=True)
+            
+            if sub.empty:
+                st.warning("No funds with allocation in this sector.")
+            else:
+                sub = sub.merge(returns, on='Fund', how='left')
+                sub = sub.merge(pe_summary_df[['Fund', 'PE (Harmonic Mean)', 'Latest PE']], on='Fund', how='left')
+                cols = ['Fund', 'Allocation (%)', '1Y Median Return (%)', '3Y Median Return (%)', '5Y Median Return (%)', 'Latest PE', 'PE (Harmonic Mean)']
+                cols = [c for c in cols if c in sub.columns]
+                
+                st.dataframe(sub[cols], use_container_width=True)
+                
+                avg_pe_hm = sub['PE (Harmonic Mean)'].dropna()
+                if len(avg_pe_hm):
+                    st.info(f"**Average PE (Harmonic Mean) across these funds:** {hmean(avg_pe_hm[avg_pe_hm > 0]):.2f}")
 
-    # ---------- Demo: sector deep dive ----------
-    sector_deep_dive('Bank',       sector_df, returns, pe_summary_df, top_n=10)
-    sector_deep_dive('IT',         sector_df, returns, pe_summary_df, top_n=10)
-    sector_deep_dive('Healthcare', sector_df, returns, pe_summary_df, top_n=10)
+    with tab3:
+        fund_list = returns['Fund'].unique().tolist()
+        selected_fund = st.selectbox("Choose a Fund", fund_list)
+        
+        if selected_fund:
+            st.subheader(f"Fund: {selected_fund}")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Rolling Returns (Median, Annualised)**")
+                r = returns[returns['Fund'] == selected_fund]
+                if not r.empty:
+                    st.dataframe(r[['1Y Median Return (%)', '3Y Median Return (%)', '5Y Median Return (%)']].T, use_container_width=True)
+                
+                st.write("**Valuation**")
+                p = pe_summary_df[pe_summary_df['Fund'] == selected_fund]
+                if not p.empty:
+                    st.dataframe(p[['Latest PE', 'PE (Harmonic Mean)', 'PE (Median)', 'PBV (HM)']].T, use_container_width=True)
 
-    # ---------- Demo: one fund overview ----------
-    sample_fund = returns.iloc[0]['Fund']
-    fund_overview(sample_fund, returns, pe_summary_df, sector_df, stock_df)
-
-    # ---------- Quick top-list ----------
-    print("\n" + "="*70)
-    print("  TOP 10 FUNDS BY 5Y MEDIAN ROLLING RETURN")
-    print("="*70)
-    top5y = (returns.dropna(subset=['5Y Median Return (%)'])
-                    .sort_values('5Y Median Return (%)', ascending=False)
-                    .head(10))
-    print(top5y[['Fund', '1Y Median Return (%)',
-                 '3Y Median Return (%)', '5Y Median Return (%)']]
-          .to_string(index=False))
-
-    return {
-        'nav': nav, 'returns': returns, 'pe': pe_summary_df,
-        'sector': sector_df, 'stock': stock_df
-    }
-
+            with col2:
+                st.write("**Top Sector Allocations**")
+                sec = sector_df[sector_df['Fund'] == selected_fund]
+                if not sec.empty:
+                    st.dataframe(sec.sort_values('Allocation (%)', ascending=False).head(8)[['Sector', 'Allocation (%)']], use_container_width=True)
+                
+            st.write("**Top Stock Holdings**")
+            stkt = stock_df[stock_df['Fund'] == selected_fund]
+            if not stkt.empty:
+                st.dataframe(stkt.sort_values('Allocation (%)', ascending=False).head(10)[['Company', 'Sector', 'Allocation (%)']], use_container_width=True)
 
 if __name__ == '__main__':
     main()
