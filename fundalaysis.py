@@ -192,9 +192,12 @@ def main():
         # Sort and display
         sorted_df = master_df.sort_values(by=sort_by, ascending=asc).reset_index(drop=True)
         
+        # Identify numeric columns for formatting (ignoring the 'Fund' string column)
+        numeric_cols = sorted_df.columns.drop('Fund')
+        
         # Format the dataframe for better UI display
         st.dataframe(
-            sorted_df.style.format("{:.2f}", na_rep="-")
+            sorted_df.style.format("{:.2f}", na_rep="-", subset=numeric_cols)
                            .background_gradient(subset=['1Y Roll Med (%)', '3Y Roll Med (%)', '5Y Roll Med (%)'], cmap='RdYlGn')
                            .background_gradient(subset=['Max Drawdown (%)'], cmap='Reds_r'),
             use_container_width=True, 
