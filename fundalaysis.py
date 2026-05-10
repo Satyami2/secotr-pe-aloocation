@@ -1,5 +1,5 @@
 """
-Sector Mutual Fund Analysis Tool - Advanced UI
+Sector Mutual Fund Analysis Tool - Pro UI
 ----------------------------------------------
 """
 
@@ -16,6 +16,9 @@ NAV_FILES = ['sector funds 1.xlsx', 'secotr funds 2.xlsx',
 SECTOR_ALLOC_FILE = 'secotrs aloocations.xlsx'
 STOCK_ALLOC_FILE  = 'sectors stock alocation.xlsx'
 PE_FILE           = 'sector pe rstio.xlsx'
+
+# Assumption for Sharpe/Sortino calculations (6% annual)
+RISK_FREE_RATE = 0.06 
 
 # ============================================================
 # DATA LOADING FUNCTIONS 
@@ -52,8 +55,10 @@ def compute_advanced_metrics(nav):
 
     for fund in nav.columns:
         s = nav[fund].dropna()
+        fund_daily_ret = daily_ret[fund].dropna()
         row = {'Fund': fund}
         
+        # 1. Rolling Returns
         for label, w in windows.items():
             if len(s) > w:
                 roll = (s / s.shift(w)) ** (252.0 / w) - 1
@@ -65,14 +70,28 @@ def compute_advanced_metrics(nav):
         row['1W Return (%)'] = round((s.iloc[-1] / s.iloc[-6] - 1) * 100, 2) if len(s) >= 6 else np.nan
         row['1M Return (%)'] = round((s.iloc[-1] / s.iloc[-22] - 1) * 100, 2) if len(s) >= 22 else np.nan
 
+        # 2. Risk & Drawdowns
         roll_max = s.cummax()
         drawdowns = (s / roll_max - 1) * 100
         row['Max Drawdown (%)'] = round(drawdowns.min(), 2) if len(drawdowns) else np.nan
 
-        fund_up_mean = daily_ret[fund][up_days].mean()
-        fund_down_mean = daily_ret[fund][down_days].mean()
+        fund_up_mean = fund_daily_ret[up_days].mean()
+        fund_down_mean = fund_daily_ret[down_days].mean()
         row['Up Capture (%)'] = round((fund_up_mean / bench_up_mean) * 100, 2) if bench_up_mean else np.nan
         row['Down Capture (%)'] = round((fund_down_mean / bench_down_mean) * 100, 2) if bench_down_mean else np.nan
+
+        # 3. Sharpe & Sortino (Annualized)
+        if len(fund_daily_ret) > 252:
+            ann_ret = fund_daily_ret.mean() * 252
+            ann_vol = fund_daily_ret.std() * np.sqrt(252)
+            row['Sharpe Ratio'] = round((ann_ret - RISK_FREE_RATE) / ann_vol, 2) if ann_vol != 0 else np.nan
+            
+            downside_ret = fund_daily_ret[fund_daily_ret < 0]
+            down_vol = downside_ret.std() * np.sqrt(252)
+            row['Sortino Ratio'] = round((ann_ret - RISK_FREE_RATE) / down_vol, 2) if down_vol != 0 else np.nan
+        else:
+            row['Sharpe Ratio'] = np.nan
+            row['Sortino Ratio'] = np.nan
 
         out[fund] = row
         
@@ -128,9 +147,6 @@ def load_sector_allocation():
     df = df.dropna(subset=['Fund', 'Sector'])
     df['Allocation (%)'] = pd.to_numeric(df['Allocation (%)'], errors='coerce')
     
-    # -----------------------------------------------------------------
-    # NEW INTELLIGENT CATEGORIZATION (Based on your image)
-    # -----------------------------------------------------------------
     def assign_category(sec):
         sec = str(sec).lower()
         if any(x in sec for x in ['bank', 'financ', 'nbfc', 'insurance']): return 'Banks & Finance'
@@ -160,10 +176,10 @@ def load_stock_allocation():
 # MAIN STREAMLIT APP
 # ============================================================
 def main():
-    st.set_page_config(page_title="Advanced Fund Analysis", layout="wide")
-    st.title("📈 Advanced Mutual Fund Analysis Tool")
+    st.set_page_config(page_title="Pro Fund Analysis", layout="wide")
+    st.title("📈 Pro Mutual Fund Analysis & Screener")
 
-    with st.spinner("Calculating metrics & categorizing sectors..."):
+    with st.spinner("Calculating metrics (Drawdowns, Sharpe, Sortino)..."):
         nav = load_nav_data()
         metrics_df = compute_advanced_metrics(nav)
         
@@ -178,7 +194,8 @@ def main():
 
     master_df = metrics_df.merge(pe_df, on='Fund', how='left')
 
-    tab1, tab2 = st.tabs(["🏆 All Funds & Rankings", "🗂️ Category & Sector Deep Dive"])
+    # ---------- UI Tabs ----------
+    tab1, tab2, tab3 = st.tabs(["🏆 All Funds & Rankings", "🗂️ Category Deep Dive", "⚖️ Fund Comparison"])
 
     # ---------------------------------------------------------
     # TAB 1: ALL FUNDS LIST & RANKING
@@ -189,8 +206,8 @@ def main():
         with col1:
             sort_options = [
                 '5Y Roll Med (%)', '3Y Roll Med (%)', '1Y Roll Med (%)', 
-                '1M Return (%)', '1W Return (%)', 'Max Drawdown (%)', 
-                'Up Capture (%)', 'Down Capture (%)'
+                '1M Return (%)', '1W Return (%)', 'Sharpe Ratio', 'Sortino Ratio', 
+                'Max Drawdown (%)', 'Up Capture (%)', 'Down Capture (%)'
             ]
             sort_by = st.selectbox("Rank Funds By:", sort_options)
             asc = True if "Drawdown" in sort_by or "Down Capture" in sort_by else False
@@ -203,7 +220,7 @@ def main():
         
         st.dataframe(
             sorted_df.style.format("{:.2f}", na_rep="-", subset=numeric_cols)
-                           .background_gradient(subset=['1Y Roll Med (%)', '3Y Roll Med (%)', '5Y Roll Med (%)'], cmap='RdYlGn')
+                           .background_gradient(subset=['1Y Roll Med (%)', '3Y Roll Med (%)', '5Y Roll Med (%)', 'Sharpe Ratio'], cmap='RdYlGn')
                            .background_gradient(subset=['Max Drawdown (%)'], cmap='Reds_r'),
             use_container_width=True, 
             height=600
@@ -214,11 +231,8 @@ def main():
     # ---------------------------------------------------------
     with tab2:
         st.markdown("### Segregate Funds by High-Level Category")
-        
-        # Get all unique high-level categories we generated
         all_categories = sorted(sector_df['Category'].unique().tolist())
         
-        # Multi-select functions exactly like a group of checkboxes
         selected_categories = st.multiselect(
             "Select Categories (Choose one or multiple):", 
             options=all_categories,
@@ -228,53 +242,75 @@ def main():
         if selected_categories:
             st.markdown(f"#### Analyzing: {', '.join(selected_categories)}")
             
-            # 1. Filter sectors based on selected parent categories
+            # Get funds in selected categories
             sec_funds = sector_df[sector_df['Category'].isin(selected_categories)]
-            
-            # Aggregate the allocation so if a fund has multiple sectors in "Tech", they sum up
             fund_alloc = sec_funds.groupby('Fund')['Allocation (%)'].sum().reset_index()
-            fund_alloc = fund_alloc.sort_values('Allocation (%)', ascending=False)
-            
             fund_names_in_sector = fund_alloc['Fund'].unique().tolist()
             
             if not fund_names_in_sector:
                 st.warning("No funds found with allocation to these categories.")
             else:
-                # 2. Show the aggregated allocation for the selected categories
-                col_a, col_b = st.columns([1, 2])
-                with col_a:
-                    st.write("**Total Allocation to Selected Categories**")
-                    st.dataframe(fund_alloc.style.format({"Allocation (%)": "{:.2f}%"}), use_container_width=True, height=350)
+                # 1. Show all Returns for these specific funds
+                st.write("**Returns & Risk Composition for Funds in this Category**")
+                cat_metrics = master_df[master_df['Fund'].isin(fund_names_in_sector)]
+                num_cols = cat_metrics.columns.drop('Fund')
+                st.dataframe(
+                    cat_metrics.style.format("{:.2f}", na_rep="-", subset=num_cols)
+                               .background_gradient(subset=['1Y Roll Med (%)', '3Y Roll Med (%)'], cmap='RdYlGn'),
+                    use_container_width=True
+                )
                 
-                # 3. Filter the PE data for these specific funds
-                with col_b:
-                    st.write("**Valuation Comparison (PE Ratios)**")
-                    cat_pe_df = pe_df[pe_df['Fund'].isin(fund_names_in_sector)].dropna(subset=['Latest PE'])
-                    
-                    if not cat_pe_df.empty:
-                        avg_latest_pe = cat_pe_df['Latest PE'].mean()
-                        cat_pe_df['Vs Category Avg'] = cat_pe_df['Latest PE'] - avg_latest_pe
-                        
-                        st.dataframe(
-                            cat_pe_df[['Fund', 'Latest PE', 'PE (Harmonic Mean)', 'Vs Category Avg']]
-                            .sort_values('Latest PE')
-                            .style.format({"Latest PE": "{:.2f}", "PE (Harmonic Mean)": "{:.2f}", "Vs Category Avg": "{:+.2f}"})
-                            .bar(subset=['Vs Category Avg'], align='mid', color=['#d65f5f', '#5fba7d']),
-                            use_container_width=True, height=350
-                        )
-                    else:
-                        st.info("No PE data available for these funds.")
+                # 2. Sub-selection for Sectoral Comparison
+                st.markdown("---")
+                st.write("**Compare Sector Allocations of Specific Funds within this Category**")
+                sub_select_funds = st.multiselect("Select funds from this category to compare sectors:", fund_names_in_sector)
+                
+                if sub_select_funds:
+                    sub_sec = sector_df[sector_df['Fund'].isin(sub_select_funds)]
+                    # Create a pivot table to compare funds side by side
+                    pivot_sec = pd.pivot_table(sub_sec, values='Allocation (%)', index='Sector', columns='Fund', aggfunc='sum', fill_value=0)
+                    st.dataframe(pivot_sec.style.format("{:.2f}%").background_gradient(cmap='Blues', axis=1), use_container_width=True)
 
-                # 4. Show Stock Allocations for these funds
-                st.markdown("#### Underlying Stock Exposure")
-                cat_stocks = stock_df[stock_df['Fund'].isin(fund_names_in_sector)]
+    # ---------------------------------------------------------
+    # TAB 3: FUND COMPARISON & DEEP DIVE (NEW)
+    # ---------------------------------------------------------
+    with tab3:
+        st.markdown("### Head-to-Head Fund Comparison")
+        all_funds_list = sorted(master_df['Fund'].unique().tolist())
+        
+        compare_funds = st.multiselect("Search and Select Funds to Compare (e.g., choose 2 or 3 to compare):", all_funds_list)
+        
+        if compare_funds:
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.write("#### 📊 Core Ratios & Metrics")
+                comp_metrics = master_df[master_df['Fund'].isin(compare_funds)].set_index('Fund').T
                 
-                if not cat_stocks.empty:
-                    top_stocks = cat_stocks.groupby('Company')['Allocation (%)'].mean().reset_index()
-                    top_stocks = top_stocks.sort_values('Allocation (%)', ascending=False).head(15)
-                    
-                    st.write(f"**Top 15 Most Held Stocks across these Funds (Avg Allocation %):**")
-                    st.dataframe(top_stocks.style.format({"Allocation (%)": "{:.2f}%"}), use_container_width=True)
+                # Format the transposed table nicely
+                st.dataframe(comp_metrics.style.format("{:.2f}", na_rep="-"), use_container_width=True, height=450)
+            
+            with col2:
+                st.write("#### 🏢 Sector Overlap")
+                comp_sec = sector_df[sector_df['Fund'].isin(compare_funds)]
+                pivot_sec = pd.pivot_table(comp_sec, values='Allocation (%)', index='Sector', columns='Fund', aggfunc='sum', fill_value=0)
+                # Sort by the first selected fund's allocation for readability
+                if len(compare_funds) > 0:
+                    pivot_sec = pivot_sec.sort_values(by=compare_funds[0], ascending=False)
+                st.dataframe(pivot_sec.style.format("{:.2f}%").background_gradient(cmap='Greens', axis=1), use_container_width=True, height=450)
+
+            st.markdown("---")
+            st.write("#### 💼 Top Stock Overlap Comparison")
+            comp_stk = stock_df[stock_df['Fund'].isin(compare_funds)]
+            pivot_stk = pd.pivot_table(comp_stk, values='Allocation (%)', index=['Company', 'Sector'], columns='Fund', aggfunc='sum', fill_value=0)
+            
+            # Sort by the average allocation across selected funds to show the most important stocks first
+            pivot_stk['Average Alloc'] = pivot_stk.mean(axis=1)
+            pivot_stk = pivot_stk.sort_values(by='Average Alloc', ascending=False).drop(columns=['Average Alloc'])
+            
+            st.dataframe(pivot_stk.head(30).style.format("{:.2f}%").background_gradient(cmap='Purples', axis=1), use_container_width=True)
+        else:
+            st.info("👆 Please select at least one fund from the dropdown above to begin comparison.")
 
 if __name__ == '__main__':
     main()
