@@ -17,11 +17,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ---------- File paths ----------
-NAV_FILES = ['sector_funds_1.xlsx', 'secotr_funds_2.xlsx',
-             'secotr_funds_3.xlsx', 'sector_funds_4.xlsx']
-SECTOR_ALLOC_FILE = 'secotrs_aloocations.xlsx'
-STOCK_ALLOC_FILE  = 'sectors_stock_alocation.xlsx'
-PE_FILE           = 'sector_pe_rstio.xlsx'
+# UPDATED: Replaced underscores with spaces to match your GitHub repository exactly.
+NAV_FILES = ['sector funds 1.xlsx', 'secotr funds 2.xlsx',
+             'secotr funds 3.xlsx', 'sector funds 4.xlsx']
+SECTOR_ALLOC_FILE = 'secotrs aloocations.xlsx'
+STOCK_ALLOC_FILE  = 'sectors stock alocation.xlsx'
+PE_FILE           = 'sector pe rstio.xlsx'
 
 
 # ============================================================
@@ -33,7 +34,7 @@ def load_nav_data():
     for f in NAV_FILES:
         raw = pd.read_excel(f, header=None)
         fund_names = raw.iloc[2, 1:].tolist()            # row 2 -> fund names
-        data = raw.iloc[4:, :].copy()                     # row 4 onwards -> data
+        data = raw.iloc[4:, :].copy()                      # row 4 onwards -> data
         data.columns = ['Date'] + fund_names
         data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
         data = data.dropna(subset=['Date']).set_index('Date')
@@ -251,7 +252,9 @@ def main():
         d['Fund'] = d['Fund'].astype(str).str.strip()
 
     # ---------- Save consolidated outputs to Excel ----------
-    out_path = '/mnt/user-data/outputs/fund_analysis_output.xlsx'
+    # IMPORTANT: Ensure this path exists or Streamlit might throw another error when saving.
+    # We'll use a local output path for the cloud environment.
+    out_path = 'fund_analysis_output.xlsx' 
     with pd.ExcelWriter(out_path, engine='openpyxl') as w:
         returns.to_excel(w, sheet_name='Rolling Returns', index=False)
         pe_summary_df.to_excel(w, sheet_name='PE Summary',     index=False)
