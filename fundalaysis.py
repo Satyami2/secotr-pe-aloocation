@@ -16,6 +16,7 @@ NAV_FILES = ['sector funds 1.xlsx', 'secotr funds 2.xlsx',
 SECTOR_ALLOC_FILE = 'secotrs aloocations.xlsx'
 STOCK_ALLOC_FILE  = 'sectors stock alocation.xlsx'
 PE_FILE           = 'sector pe rstio.xlsx'
+SECTOR_CORR_FILE  = 'SECOTRCORR.xlsx'   # NEW
 
 RISK_FREE_RATE = 0.06 
 
@@ -180,6 +181,45 @@ def load_stock_allocation():
     return df
 
 # ============================================================
+# NEW: SECTOR INDEX LOADING (for correlations)
+# ============================================================
+@st.cache_data
+def load_sector_indices():
+    """
+    Long-format file: Index Name | Date | Close Price
+    Returns a wide dataframe: Date index, one column per sector index.
+    """
+    raw = pd.read_excel(SECTOR_CORR_FILE, header=None,
+                        names=['Index', 'Date', 'Close'])
+    raw = raw.iloc[3:].copy()                              # skip headers
+    raw['Date']  = pd.to_datetime(raw['Date'],  errors='coerce')
+    raw['Close'] = pd.to_numeric(raw['Close'], errors='coerce')
+    raw = raw.dropna(subset=['Index', 'Date', 'Close'])
+    wide = raw.pivot_table(index='Date', columns='Index',
+                           values='Close', aggfunc='last')
+    wide = wide.sort_index()
+    wide.columns.name = None       # avoid 'Index' axis name colliding with reset_index() later
+    wide.index.name = 'Date'
+    return wide
+
+@st.cache_data
+def compute_correlation(indices_df, years):
+    """
+    Compute correlation matrix of daily returns over the last `years` years.
+    years = 0 means use the full history available.
+    """
+    if years and years > 0:
+        cutoff = indices_df.index.max() - pd.DateOffset(years=years)
+        df = indices_df.loc[indices_df.index >= cutoff]
+    else:
+        df = indices_df
+    returns = df.pct_change().dropna(how='all')
+    # only keep indices with enough data in the window
+    returns = returns.dropna(axis=1, thresh=int(len(returns) * 0.5))
+    corr = returns.corr()
+    return corr
+
+# ============================================================
 # MAIN STREAMLIT APP
 # ============================================================
 def main():
@@ -193,6 +233,7 @@ def main():
         pe_df = pe_summary(pe_raw)
         sector_df = load_sector_allocation()
         stock_df  = load_stock_allocation()
+        indices_df = load_sector_indices()              # NEW
 
         for d in (metrics_df, pe_df, sector_df, stock_df):
             d['Fund'] = d['Fund'].astype(str).str.strip()
@@ -201,8 +242,13 @@ def main():
     master_df = metrics_df.merge(pe_df, on='Fund', how='left')
     master_df['Category'] = master_df['Fund'].apply(get_fund_category)
 
-    # ---------- UI Tabs ----------
-    tab1, tab2, tab3 = st.tabs(["🏆 All Funds & Rankings", "🗂️ Category Deep Dive", "⚖️ Custom Fund Comparison"])
+    # ---------- UI Tabs (added a 4th tab for correlations) ----------
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🏆 All Funds & Rankings",
+        "🗂️ Category Deep Dive",
+        "⚖️ Custom Fund Comparison",
+        "🔗 Sector Correlations"
+    ])
 
     # ---------------------------------------------------------
     # TAB 1: ALL FUNDS LIST & RANKING
@@ -323,6 +369,121 @@ def main():
             st.dataframe(pivot_stk.head(30).style.format("{:.2f}%").background_gradient(cmap='Oranges', axis=1), use_container_width=True)
         else:
             st.info("👆 Please select at least one fund from the dropdown above to begin comparison.")
+
+    # ---------------------------------------------------------
+    # TAB 4: SECTOR INDEX CORRELATIONS  (NEW)
+    # ---------------------------------------------------------
+    with tab4:
+        st.markdown("### 🔗 Sector Index Correlations")
+        st.caption(
+            "Pearson correlation of **daily returns** between Nifty sector indices. "
+            "Values close to 1 mean the two sectors move together; close to 0 means "
+            "they move independently; negative means they move opposite ways."
+        )
+
+        # --- Controls ---
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            window_choice = st.selectbox(
+                "Time window:",
+                ['1 Year', '3 Years', '5 Years', '10 Years', 'Full History']
+            )
+        years_map = {'1 Year': 1, '3 Years': 3, '5 Years': 5,
+                     '10 Years': 10, 'Full History': 0}
+        years = years_map[window_choice]
+
+        corr = compute_correlation(indices_df, years)
+
+        if corr.empty or len(corr) < 2:
+            st.warning("Not enough data to compute correlations for this window.")
+        else:
+            with c2:
+                st.info(
+                    f"Showing **{len(corr)} sectors** "
+                    f"over the **last {years} year(s)**"
+                    if years else
+                    f"Showing **{len(corr)} sectors** over the **full history**"
+                )
+
+            view_mode = st.radio(
+                "View:",
+                ["Full correlation matrix", "Pick one sector"],
+                horizontal=True
+            )
+
+            # ---- A) Full matrix ----
+            if view_mode == "Full correlation matrix":
+                st.write("#### Full Correlation Matrix")
+                st.dataframe(
+                    corr.style.format("{:.2f}")
+                              .background_gradient(cmap='RdYlGn', vmin=-1, vmax=1),
+                    use_container_width=True,
+                    height=650
+                )
+
+                # quick highlights
+                # take upper triangle of corr (excluding diagonal) and rank pairs
+                tri = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+                pairs = (tri.stack().reset_index()
+                            .rename(columns={'level_0': 'Sector A',
+                                             'level_1': 'Sector B',
+                                             0: 'Correlation'}))
+                pairs['Correlation'] = pairs['Correlation'].round(3)
+
+                colA, colB = st.columns(2)
+                with colA:
+                    st.write("**Most correlated pairs**")
+                    st.dataframe(
+                        pairs.sort_values('Correlation', ascending=False)
+                             .head(10).reset_index(drop=True),
+                        use_container_width=True
+                    )
+                with colB:
+                    st.write("**Least correlated pairs (good for diversification)**")
+                    st.dataframe(
+                        pairs.sort_values('Correlation', ascending=True)
+                             .head(10).reset_index(drop=True),
+                        use_container_width=True
+                    )
+
+            # ---- B) One sector vs all others ----
+            else:
+                target = st.selectbox(
+                    "Choose a sector to see how every other sector correlates with it:",
+                    sorted(corr.columns.tolist())
+                )
+
+                series = corr[target].drop(target).sort_values(ascending=False)
+                table = (series.reset_index()
+                              .rename(columns={'index': 'Sector',
+                                               target: 'Correlation with ' + target}))
+                table['Correlation with ' + target] = (
+                    table['Correlation with ' + target].round(3))
+
+                col_l, col_r = st.columns([1, 1])
+                with col_l:
+                    st.write(f"#### Correlation of every sector with **{target}**")
+                    st.dataframe(
+                        table.style.format({'Correlation with ' + target: "{:.3f}"})
+                                   .background_gradient(
+                                       subset=['Correlation with ' + target],
+                                       cmap='RdYlGn', vmin=-1, vmax=1),
+                        use_container_width=True,
+                        height=600
+                    )
+                with col_r:
+                    st.write("**Top 5 most aligned with " + target + "**")
+                    st.dataframe(table.head(5).reset_index(drop=True),
+                                 use_container_width=True)
+                    st.write("**Top 5 least aligned with " + target + "**")
+                    st.dataframe(table.tail(5).sort_values(
+                                    'Correlation with ' + target).reset_index(drop=True),
+                                 use_container_width=True)
+
+                    st.markdown(
+                        "💡 *Sectors with **low or negative** correlation with "
+                        f"{target} are useful for **diversifying** away from {target}-style risk.*"
+                    )
 
 if __name__ == '__main__':
     main()
