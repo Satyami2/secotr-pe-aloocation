@@ -6,7 +6,6 @@ Sector Mutual Fund Analysis Tool - Pro UI
 import streamlit as st
 import pandas as pd
 import numpy as np
-from scipy.stats import hmean
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -154,13 +153,12 @@ def pe_summary(pe_data):
     rows = []
     for fund, df in pe_data.items():
         pe = df['PE'].dropna()
-        pe = pe[pe > 0]                                  
+        pe = pe[pe > 0]
         if len(pe) == 0: continue
         rows.append({
             'Fund': fund,
             'Latest PE': round(df['PE'].dropna().iloc[0], 2) if df['PE'].dropna().size else np.nan,
-            'PE (Harmonic Mean)': round(hmean(pe), 2),
-            'PBV (HM)': round(hmean(df['PBV'].dropna()[df['PBV'] > 0]), 2) if (df['PBV'].dropna() > 0).any() else np.nan,
+            'Avg PE': round(pe.mean(), 2),
         })
     return pd.DataFrame(rows)
 
