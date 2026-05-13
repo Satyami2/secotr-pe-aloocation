@@ -136,8 +136,10 @@ def load_pe_data():
         else:
             try:
                 d = pd.to_datetime(r[0])
-                pe   = pd.to_numeric(r[1], errors='coerce')
-                pbv  = pd.to_numeric(r[3], errors='coerce')
+                # Use column index 2 = "PE(x)_hm" (harmonic-mean PE pre-computed by data provider)
+                # rather than column index 1 = "Scheme PE (x)" (the regular PE).
+                pe   = pd.to_numeric(r[2], errors='coerce')
+                pbv  = pd.to_numeric(r[4], errors='coerce')   # PBV_hm
                 dy   = pd.to_numeric(r[5], errors='coerce')
                 mcap = pd.to_numeric(r[6], errors='coerce')
                 if pd.notna(d):
