@@ -318,19 +318,34 @@ def main():
                 with colA:
                     st.write("**Sector Composition Breakdown**")
                     sub_sec = sector_df[sector_df['Fund'].isin(sub_select_funds)]
-                    pivot_sec = pd.pivot_table(sub_sec, values='Allocation (%)', index='Sector', columns='Fund', aggfunc='sum', fill_value=0)
-                    st.dataframe(pivot_sec.style.format("{:.2f}%").background_gradient(cmap='Blues', axis=1), use_container_width=True)
-                
+                    if sub_sec.empty:
+                        st.info("No sector allocation data available for these funds.")
+                    else:
+                        pivot_sec = pd.pivot_table(sub_sec, values='Allocation (%)',
+                                                   index='Sector', columns='Fund',
+                                                   aggfunc='sum', fill_value=0)
+                        st.dataframe(pivot_sec.style.format("{:.2f}%")
+                                                .background_gradient(cmap='Blues', axis=1),
+                                     use_container_width=True)
+
                 with colB:
                     st.write("**Top Stock Composition Breakdown**")
                     sub_stk = stock_df[stock_df['Fund'].isin(sub_select_funds)]
-                    pivot_stk = pd.pivot_table(sub_stk, values='Allocation (%)', index='Company', columns='Fund', aggfunc='sum', fill_value=0)
-                    
-                    # Sort stocks by average holding so the biggest ones float to the top
-                    pivot_stk['Avg_Holding'] = pivot_stk.mean(axis=1)
-                    pivot_stk = pivot_stk.sort_values('Avg_Holding', ascending=False).drop(columns=['Avg_Holding']).head(20)
-                    
-                    st.dataframe(pivot_stk.style.format("{:.2f}%").background_gradient(cmap='Purples', axis=1), use_container_width=True)
+                    if sub_stk.empty:
+                        st.info("No stock allocation data available for these funds.")
+                    else:
+                        pivot_stk = pd.pivot_table(sub_stk, values='Allocation (%)',
+                                                   index='Company', columns='Fund',
+                                                   aggfunc='sum', fill_value=0)
+                        if not pivot_stk.empty:
+                            # Sort stocks by average holding so the biggest ones float to the top
+                            pivot_stk['Avg_Holding'] = pivot_stk.mean(axis=1)
+                            pivot_stk = (pivot_stk.sort_values('Avg_Holding', ascending=False)
+                                                  .drop(columns=['Avg_Holding'])
+                                                  .head(20))
+                            st.dataframe(pivot_stk.style.format("{:.2f}%")
+                                                    .background_gradient(cmap='Purples', axis=1),
+                                         use_container_width=True)
 
     # ---------------------------------------------------------
     # TAB 3: CUSTOM FUND COMPARISON (Across all categories)
@@ -353,20 +368,43 @@ def main():
             with col2:
                 st.write("#### 🏢 Sector Composition Breakdown")
                 comp_sec = sector_df[sector_df['Fund'].isin(compare_funds)]
-                pivot_sec = pd.pivot_table(comp_sec, values='Allocation (%)', index='Sector', columns='Fund', aggfunc='sum', fill_value=0)
-                if len(compare_funds) > 0:
-                    pivot_sec = pivot_sec.sort_values(by=compare_funds[0], ascending=False)
-                st.dataframe(pivot_sec.style.format("{:.2f}%").background_gradient(cmap='Greens', axis=1), use_container_width=True, height=450)
+                if comp_sec.empty:
+                    st.warning("No sector allocation data available for the selected fund(s).")
+                else:
+                    pivot_sec = pd.pivot_table(comp_sec, values='Allocation (%)',
+                                               index='Sector', columns='Fund',
+                                               aggfunc='sum', fill_value=0)
+                    # Sort by the first selected fund IF it has data in the pivot;
+                    # otherwise fall back to the first available column.
+                    sort_col = (compare_funds[0]
+                                if compare_funds[0] in pivot_sec.columns
+                                else (pivot_sec.columns[0] if len(pivot_sec.columns) else None))
+                    if sort_col is not None:
+                        pivot_sec = pivot_sec.sort_values(by=sort_col, ascending=False)
+                    st.dataframe(
+                        pivot_sec.style.format("{:.2f}%")
+                                       .background_gradient(cmap='Greens', axis=1),
+                        use_container_width=True, height=450
+                    )
 
             st.markdown("---")
             st.write("#### 💼 Top Stock Composition Breakdown")
             comp_stk = stock_df[stock_df['Fund'].isin(compare_funds)]
-            pivot_stk = pd.pivot_table(comp_stk, values='Allocation (%)', index=['Company', 'Sector'], columns='Fund', aggfunc='sum', fill_value=0)
-            
-            pivot_stk['Average Alloc'] = pivot_stk.mean(axis=1)
-            pivot_stk = pivot_stk.sort_values(by='Average Alloc', ascending=False).drop(columns=['Average Alloc'])
-            
-            st.dataframe(pivot_stk.head(30).style.format("{:.2f}%").background_gradient(cmap='Oranges', axis=1), use_container_width=True)
+            if comp_stk.empty:
+                st.warning("No stock allocation data available for the selected fund(s).")
+            else:
+                pivot_stk = pd.pivot_table(comp_stk, values='Allocation (%)',
+                                           index=['Company', 'Sector'], columns='Fund',
+                                           aggfunc='sum', fill_value=0)
+                if not pivot_stk.empty:
+                    pivot_stk['Average Alloc'] = pivot_stk.mean(axis=1)
+                    pivot_stk = (pivot_stk.sort_values(by='Average Alloc', ascending=False)
+                                          .drop(columns=['Average Alloc']))
+                    st.dataframe(
+                        pivot_stk.head(30).style.format("{:.2f}%")
+                                                .background_gradient(cmap='Oranges', axis=1),
+                        use_container_width=True
+                    )
         else:
             st.info("👆 Please select at least one fund from the dropdown above to begin comparison.")
 
